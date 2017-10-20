@@ -130,6 +130,8 @@ public class MainActivity extends AppCompatActivity
         @Override
         public void onCharacteristicChanged(BluetoothGatt gatt, final BluetoothGattCharacteristic characteristic) {
             // this will get called anytime you perform a read or write characteristic operation
+
+            Log.i("BBQ bt", "CHARACTERISTIC CHANGED: UUID:" + characteristic.getUuid() + " VALUE: " + characteristic.getValue());
         }
 
         @Override
@@ -165,15 +167,22 @@ public class MainActivity extends AppCompatActivity
             {
                 Log.i("BBQ bt", "Found Characteristic for Service: " + aGattService.toString() + " Characteristic: " + aCharacteristic.toString() + " and UUID: "
                         + " Characteristic UUID: " + aCharacteristic.getUuid().toString() + " Characteristic Value: " + aCharacteristic.getValue());
+
+                Log.i("BBQ bt", "Searching Descripors for Characteristics");
+                for (BluetoothGattDescriptor aDescriptor: aCharacteristic.getDescriptors())
+                {
+                     Log.i("BBQ bt", "Found Descriptor for UUID: " + aCharacteristic.getUuid() + " Descriptor: "
+                              + aDescriptor.toString() + " with Value: " + aDescriptor.getValue() + " UUID: " + aDescriptor.getUuid());
+                }
                 if(aCharacteristic.getUuid().toString().matches("6e400003-b5a3-f393-e0a9-e50e24dcca9e"))
                 {
-                    Log.i("BBQ bt", "Searching Descripors for Characteristics");
                     btCharacteristic = aCharacteristic;
-                    for (BluetoothGattDescriptor aDescriptor: btCharacteristic.getDescriptors())
-                    {
-                        Log.i("BBQ bt", "Found Descriptor for UUID: " + aCharacteristic.getUuid() + " Descriptor: "
-                                + aDescriptor.toString() + " with Value: " + aDescriptor.getValue() + " UUID: " + aDescriptor.getUuid());
-                    }
+                    btGatt.setCharacteristicNotification(btCharacteristic, true);
+                    BluetoothGattDescriptor descriptor = btCharacteristic.getDescriptor(
+                            UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
+                    descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+                    btGatt.writeDescriptor(descriptor);
+                    Log.i("BBQ bt", "Decriptor written: " + descriptor.toString() + " UUID: " + descriptor.getUuid() +  " VALUE: " + descriptor.getValue());
                 }
             }
         }
@@ -194,53 +203,7 @@ public class MainActivity extends AppCompatActivity
 
 
 /*
-Timeline
 
-Inn - another party shows up
-(An elven rogue(slightly on fire) with a terrified halfling wizard wrapped around his head,riding on a shield being dragged behind a horse ridden by
-a dwarven fighter and elf ranger(unconscious).)
-
-Rubble-filled road - Traveral Challenge
-(The road is blocked by rubble, requiring the party to find a way of bypassing it if they want to take the wagon with them)
-
-Merge{
-Burnt Out Alchemists Shop - blighter fight
-(Overrun by blighters. Contains Blighter Trogs, a pseudoDragon joins the party and tells them were Wilard's gold is)
-
-Farm - Wilards gold
-(Overrun by blighters Has a blighter farmer approaching a cow, brandishing its fork at the party and then fleeing, as other blighters ambush the party.
-Introduction of the first blighter Warlock)
-}
-
-Dwarven Dragon Funeral - World Building
-(A group of dwarven air clerices transporting a wing of Bishop Horn, Dragon Fulcrum of the Dwarven Priesthood, transporting the part of his body he instructed to
-be sent to the bottom of a lake where he had his air-cleric epiphany. The group gives the party a vision gave the dragon had)
-
-Fork in the Road - Traversal Challenge
-A fork in road that the party must figure out whether or not their lost. Getting lost will lead to a road blocked by a rockslide, which they must navigate only to
-realize they've gone the wrong way once they get to the other side.
-
-The Paired Knights - Negociation/Combat Encounter
-The 2 chared new blood knights return, ambushing the party on the
-
-The Walk of Boards - Traversal Challenge
-(The Party must find a way through the Oakland's swamp to the monastry, options include the walk of boards, a series of rotting planks/rails the wagon can try
-to meander along. Another option is the ferry raft(the landing place is abandoned). Another option is to suck it and see and try to brute force their way
-through the swamp)
-
-Rotted Ambush - Combat encounter
-(The party is jumped by hunters from the Rotted Township. Who carry off John, Bill will then walk off into the swamp after him)
-
-Rotted Township Outskirts - Stealth/Combat Encounter
-(The party must sneak past a series of wandering mobs lead by A hate seat)
-
-Rotted Township - Dungeon-esque Encounter
-Party reached the rotted township. Where the town spring is guarded by 3 choirmen and a number of lynchers. A rock inside the spring is a sloth demon that is
-invulnerable and must be banished with the fuck off stick held in the town chapel. The mob of lyncher will return if not slain earlier. john is rescued from a
-net. A small cute bookish librarian girl(or she-rat) is also rescued(secretly a sucubus going for Willard's/Rayn's Character).
-
-The Monastary of Ooh-Whatsit - Story Area/Murder Mystery
-(The party arrives at the Knowledge Gnome Monastery)
 
 
 
