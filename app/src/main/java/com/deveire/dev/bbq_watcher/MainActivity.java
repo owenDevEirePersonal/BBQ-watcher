@@ -147,7 +147,8 @@ public class MainActivity extends AppCompatActivity
 
         @Override
         public void onServicesDiscovered(final BluetoothGatt gatt, final int status) {
-            Log.i("BBQ bt", "BT Service Discovered for gatt:" + gatt + "\n with status: " + status);
+
+
             displayGattServices(gatt.getServices());
         }
     };
@@ -159,9 +160,10 @@ public class MainActivity extends AppCompatActivity
         // Loops through available GATT Services.
         for (BluetoothGattService aGattService : gattServices)
         {
+            Log.i("BBQ bt", "BT Service Discovered for gatt:" + aGattService + "\n with UUID: " + aGattService.getUuid());
             for (BluetoothGattCharacteristic aCharacteristic : aGattService.getCharacteristics())
             {
-                Log.i("BBQ bt", "Found Characteristic for Service: " + aGattService.toString() + " Characteristic: " + aCharacteristic.toString()
+                Log.i("BBQ bt", "Found Characteristic for Service: " + aGattService.toString() + " Characteristic: " + aCharacteristic.toString() + " and UUID: "
                         + " Characteristic UUID: " + aCharacteristic.getUuid().toString() + " Characteristic Value: " + aCharacteristic.getValue());
                 if(aCharacteristic.getUuid().toString().matches("6e400003-b5a3-f393-e0a9-e50e24dcca9e"))
                 {
