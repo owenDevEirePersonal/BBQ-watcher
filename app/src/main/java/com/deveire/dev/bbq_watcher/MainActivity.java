@@ -31,6 +31,31 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
+/*
+    ++++++++General Explanation of the code++++++++
+
+    How the app basically works is this.
+
+    1. On startup, the app gets the phone's bluetooth adapter(btAdapter).
+    2. When the user clicks the app's Scan Button it starts an LEScan and begins scanning for BLE(Bluetooth Low Energy) Devices.
+    3. Continues to scan until it finds a device that matches the hard-coded Address(I've used the address of the range dial I was given)
+        This check is performed in the leScanCallback listener.
+    4. Once it finds the corresponding device it opens a gattConnection to the device( btGatt).
+    5. Once the connection is established, it triggers onConnectionStateChanged in the BluetoothGattCallback(btGattCallback), which will stop the ble scanning and
+        start the service discovery process.
+    6. Once the services are discovered, it triggers onServicesDiscovered inside btGattCallback, which calls displayGattServices(). Which in turn
+        writes all the connected gatt's services, charactistices and descriptors to Android Stuido's Logcat, for debugging purposes.
+    7. displayGattServices() also finds the characteristic that contains the temperature data(btCharacteristic) by matching its UUID,
+        and writes the enable notifications value to that characteristic's description.
+    8. Now, whenever the value stored in the temperature charactistic changes, it will trigger onCharacteristicChanged() inside btGattCallback.
+    9. The code in onCharacteristicChanged() then simply retrieves the array of bytes stored in the characteristic's value and decodes them into the temperatures for
+        the 2 probes before displaying them in both Logcat and on the app's textView.
+
+    ++++++++End of General Explanation of the code++++++++
+
+
+*/
+
 public class MainActivity extends AppCompatActivity
 {
     private Button scanButton;
@@ -47,7 +72,26 @@ public class MainActivity extends AppCompatActivity
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+
+        //Setup the bluetooth adapter
+        BluetoothManager btManager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+
+        btAdapter = btManager.getAdapter();
+
+        //if bluetooth is not enabled, open dialog asking the user to enable it
+        final int REQUEST_ENABLE_BT = 99;
+        if (btAdapter != null && !btAdapter.isEnabled())
+        {
+            Intent enableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+            startActivityForResult(enableIntent, REQUEST_ENABLE_BT);
+        }
+
+
+        //Setup the textView for later when we need to display the temperatures
         temperText = (TextView) findViewById(R.id.temperText);
+
+
+        //Setup the listener for when the scan button is clicked
         scanButton = (Button) findViewById(R.id.scanButton);
         scanButton.setOnClickListener(new View.OnClickListener()
         {
@@ -60,53 +104,27 @@ public class MainActivity extends AppCompatActivity
         });
 
 
-        Log.i("BBQ_bt", "pairedDevices: ");
-
-
-        BluetoothManager btManager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
-
-        final int REQUEST_ENABLE_BT = 99;
-
-        btAdapter = btManager.getAdapter();
-        if (btAdapter != null && !btAdapter.isEnabled())
-        {
-            Intent enableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
-            startActivityForResult(enableIntent, REQUEST_ENABLE_BT);
-        }
-
-        Set<BluetoothDevice> pairedDevices;
-        pairedDevices = btAdapter.getBondedDevices();
-        Log.i("BBQ_bt", "pairedDevices: " + pairedDevices.toString());
-
-        IntentFilter filter = new IntentFilter();
-
-        filter.addAction(BluetoothDevice.ACTION_FOUND);
-        filter.addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED);
-        filter.addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
-
-
-
-
-        //btAdapter.startLeScan(leScanCallback);
-
-
-
     }
 
     @Override
     protected void onDestroy()
     {
+        //When the app is shutdown by the android OS, stop any ongoing scans and close any open Gatt connections.
         btAdapter.stopLeScan(leScanCallback);
         btGatt.close();
         super.onDestroy();
     }
 
+
+
     private BluetoothAdapter.LeScanCallback leScanCallback = new BluetoothAdapter.LeScanCallback()
     {
+        //onLeScan triggers whenever an leScan detects a BLE device
         @Override
         public void onLeScan(final BluetoothDevice device, final int rssi, final byte[] scanRecord)
         {
             Log.i("BBQ bt", "onLeScan occured: Device Address: " + device.getAddress());
+
             // your implementation here
             if(device.getAddress().matches("E4:81:3F:31:D9:6E"))
             {
@@ -117,6 +135,7 @@ public class MainActivity extends AppCompatActivity
 
         }
     };
+
 
 
     private final BluetoothGattCallback btleGattCallback = new BluetoothGattCallback()
@@ -152,19 +171,19 @@ public class MainActivity extends AppCompatActivity
                     {
                         if(temp1 == -325.0 && temp2 == -325.0)
                         {
-                            temperText.setText("Current Temperature:\n Probe 1: Disconnected\n Probe 2: Disconnected");
+                            temperText.setText("Current Temperature:\n Counter-Clockwise-most Probe 1:\t Disconnected\n Clockwise-most Probe 2:     Disconnected");
                         }
                         else if(temp1 == -325.0)
                         {
-                            temperText.setText("Current Temperature:\n Probe 1: Disconnected\n Probe 2: " + temp2);
+                            temperText.setText("Current Temperature:\n Counter-Clockwise-most Probe 1:\t Disconnected\n Clockwise-most Probe 2:\t                " + temp2 + "^C");
                         }
                         else if(temp2 == -325.0)
                         {
-                            temperText.setText("Current Temperature:\n Probe 1: " + temp1 + "\n Probe 2: Disconnected");
+                            temperText.setText("Current Temperature:\n Counter-Clockwise-most Probe 1:\t " + temp1 + "^C" + "\n Clockwise-most Probe 2:       Disconnected");
                         }
                         else
                         {
-                            temperText.setText("Current Temperature:\n Probe 1: " + temp1 + "\n Probe 2: " + temp2);
+                            temperText.setText("Current Temperature:\n Counter-Clockwise-most Probe 1:\t " + temp1 + "^C" + "\n Clockwise-most Probe 2:\t                " + temp2 + "^C");
                         }
                     }
                 });
@@ -180,19 +199,21 @@ public class MainActivity extends AppCompatActivity
             {
                 Log.i("BBQ bt", "onConnectionStateChanged: connected, stopping scan.");
                 btAdapter.stopLeScan(leScanCallback);
-                Log.i("BBQ bt", "Attempting to start service discovery:" + btGatt.discoverServices());
+                Log.i("BBQ bt", "Attempting to start service discovery:");
+                btGatt.discoverServices();
             }
 
         }
 
         @Override
-        public void onServicesDiscovered(final BluetoothGatt gatt, final int status) {
-
-
+        public void onServicesDiscovered(final BluetoothGatt gatt, final int status)
+        {
             displayGattServices(gatt.getServices());
         }
     };
 
+    //Write to log, any services, characteristics or descriptors found.
+    //Also writes the enableNotifications value to the descriptor for the temperature storing characteristic
     private void displayGattServices(List<BluetoothGattService> gattServices)
     {
         if (gattServices == null) return;
@@ -213,17 +234,10 @@ public class MainActivity extends AppCompatActivity
                               + aDescriptor.toString() + " with Value: " + aDescriptor.getValue() + " UUID: " + aDescriptor.getUuid());
                 }
                 Log.i("BBQ bt", "Done Searching Descripors for Characteristics");
-                /*if(aCharacteristic.getUuid().toString().matches("6e400002-b5a3-f393-e0a9-e50e24dcca9e"))
-                {
-                    btCharacteristic = aCharacteristic;
-                    btGatt.setCharacteristicNotification(btCharacteristic, true);
-                    BluetoothGattDescriptor descriptor = btCharacteristic.getDescriptor(
-                            UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
-                    descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-                    btGatt.writeDescriptor(descriptor);
-                    Log.i("BBQ bt", "Decriptor written: " + descriptor.toString() + " UUID: " + descriptor.getUuid() +  " A VALUE: " + descriptor.getValue().toString());
-                }
-                else */if(aCharacteristic.getUuid().toString().matches("6e400003-b5a3-f393-e0a9-e50e24dcca9e"))
+
+
+                //If aCharacteristic is the Temperature Storing Characteristic, writes the enableNotifications value to its descriptor
+                if(aCharacteristic.getUuid().toString().matches("6e400003-b5a3-f393-e0a9-e50e24dcca9e"))
                 {
                     btCharacteristic = aCharacteristic;
                     btGatt.setCharacteristicNotification(btCharacteristic, true);
@@ -238,13 +252,13 @@ public class MainActivity extends AppCompatActivity
     }
 
 
+    //Converts a 2-byte code to an a temperature in degree's Celsius
     private double bytesToTemperatures(byte[] data, int firstByteIndex, int secondByteIndex)
     {
         int tempdata = data[firstByteIndex] * 256 + data[secondByteIndex];
 
         if (tempdata != 0x810C)
         {
-            //Log.i("Mystery Byte", "Char: " + (char)(0x810C)  + "int: " + (int)(0x810C) + "double: " + (double)(0x810C));
             double tempout = tempdata / 100.0;
             return tempout;
         }
