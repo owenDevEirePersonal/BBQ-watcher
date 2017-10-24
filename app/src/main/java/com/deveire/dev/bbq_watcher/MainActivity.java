@@ -1,5 +1,6 @@
 package com.deveire.dev.bbq_watcher;
 
+import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
@@ -24,6 +25,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Set;
@@ -33,18 +35,11 @@ public class MainActivity extends AppCompatActivity
 {
     private Button scanButton;
     private TextView temperText;
-    String logcatOutput;
-    String allMarkedLines;
 
     private BluetoothAdapter btAdapter;
-    private BluetoothDevice btDevice;
     private BluetoothGatt btGatt;
     private BluetoothGattCharacteristic btCharacteristic;
 
-
-
-    private final UUID range_Socket_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
-    String ThreadLog;
 
     @Override
     protected void onCreate(Bundle savedInstanceState)
@@ -64,7 +59,6 @@ public class MainActivity extends AppCompatActivity
             }
         });
 
-        ThreadLog = "Start";
 
         Log.i("BBQ_bt", "pairedDevices: ");
 
@@ -125,17 +119,61 @@ public class MainActivity extends AppCompatActivity
     };
 
 
-    private final BluetoothGattCallback btleGattCallback = new BluetoothGattCallback() {
+    private final BluetoothGattCallback btleGattCallback = new BluetoothGattCallback()
+    {
 
         @Override
-        public void onCharacteristicChanged(BluetoothGatt gatt, final BluetoothGattCharacteristic characteristic) {
+        public void onCharacteristicChanged(BluetoothGatt gatt, final BluetoothGattCharacteristic characteristic)
+        {
             // this will get called anytime you perform a read or write characteristic operation
 
             Log.i("BBQ bt", "CHARACTERISTIC CHANGED: UUID:" + characteristic.getUuid() + " VALUE: " + characteristic.getValue());
+            for (Byte aByte: characteristic.getValue())
+            {
+                try
+                {
+                    Log.i("BBQ bt", "String Value: " + aByte.toString() + " Int Value: " + aByte.intValue() + " Char Value: " + (char)(aByte.intValue()));
+                }
+                catch (IllegalArgumentException e)
+                {
+                    Log.i("BBQ bt", "String Value: " + aByte.toString() + " Int Value: " + aByte.intValue());
+                }
+            }
+            byte[] bytes = characteristic.getValue();
+            if((char)(bytes[0]) == 'T')
+            {
+                final double temp1 = bytesToTemperatures(bytes, 1, 2);
+                final double temp2 = bytesToTemperatures(bytes, 3, 4);
+                Log.i("BBQ bt", "Translating Byte Character: " + (char) (bytes[0]) + " Probe 1 Temp: " + temp1 + " Probe 2 Temp: " + temp2);
+                runOnUiThread(new Runnable()
+                {
+                    @Override
+                    public void run()
+                    {
+                        if(temp1 == -325.0 && temp2 == -325.0)
+                        {
+                            temperText.setText("Current Temperature:\n Probe 1: Disconnected\n Probe 2: Disconnected");
+                        }
+                        else if(temp1 == -325.0)
+                        {
+                            temperText.setText("Current Temperature:\n Probe 1: Disconnected\n Probe 2: " + temp2);
+                        }
+                        else if(temp2 == -325.0)
+                        {
+                            temperText.setText("Current Temperature:\n Probe 1: " + temp1 + "\n Probe 2: Disconnected");
+                        }
+                        else
+                        {
+                            temperText.setText("Current Temperature:\n Probe 1: " + temp1 + "\n Probe 2: " + temp2);
+                        }
+                    }
+                });
+            }
         }
 
         @Override
-        public void onConnectionStateChange(final BluetoothGatt gatt, final int status, final int newState) {
+        public void onConnectionStateChange(final BluetoothGatt gatt, final int status, final int newState)
+        {
             // this will get called when a device connects or disconnects
             Log.i("BBQ bt", "onConnectionStateChange occured: " + status + ", " + newState);
             if(newState == BluetoothGatt.STATE_CONNECTED)
@@ -174,7 +212,8 @@ public class MainActivity extends AppCompatActivity
                      Log.i("BBQ bt", "Found Descriptor for UUID: " + aCharacteristic.getUuid() + " Descriptor: "
                               + aDescriptor.toString() + " with Value: " + aDescriptor.getValue() + " UUID: " + aDescriptor.getUuid());
                 }
-                if(aCharacteristic.getUuid().toString().matches("6e400003-b5a3-f393-e0a9-e50e24dcca9e"))
+                Log.i("BBQ bt", "Done Searching Descripors for Characteristics");
+                /*if(aCharacteristic.getUuid().toString().matches("6e400002-b5a3-f393-e0a9-e50e24dcca9e"))
                 {
                     btCharacteristic = aCharacteristic;
                     btGatt.setCharacteristicNotification(btCharacteristic, true);
@@ -182,11 +221,36 @@ public class MainActivity extends AppCompatActivity
                             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
                     descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
                     btGatt.writeDescriptor(descriptor);
-                    Log.i("BBQ bt", "Decriptor written: " + descriptor.toString() + " UUID: " + descriptor.getUuid() +  " VALUE: " + descriptor.getValue());
+                    Log.i("BBQ bt", "Decriptor written: " + descriptor.toString() + " UUID: " + descriptor.getUuid() +  " A VALUE: " + descriptor.getValue().toString());
+                }
+                else */if(aCharacteristic.getUuid().toString().matches("6e400003-b5a3-f393-e0a9-e50e24dcca9e"))
+                {
+                    btCharacteristic = aCharacteristic;
+                    btGatt.setCharacteristicNotification(btCharacteristic, true);
+                    BluetoothGattDescriptor descriptor = btCharacteristic.getDescriptor(
+                            UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
+                    descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+                    btGatt.writeDescriptor(descriptor);
+                    Log.i("BBQ bt", "Decriptor written: " + descriptor.toString() + " UUID: " + descriptor.getUuid() +  " B VALUE: " + descriptor.getValue().toString());
                 }
             }
         }
     }
+
+
+    private double bytesToTemperatures(byte[] data, int firstByteIndex, int secondByteIndex)
+    {
+        int tempdata = data[firstByteIndex] * 256 + data[secondByteIndex];
+
+        if (tempdata != 0x810C)
+        {
+            //Log.i("Mystery Byte", "Char: " + (char)(0x810C)  + "int: " + (int)(0x810C) + "double: " + (double)(0x810C));
+            double tempout = tempdata / 100.0;
+            return tempout;
+        }
+        return 2222.22;
+    }
+
 }
 
 
