@@ -1,6 +1,5 @@
 package com.deveire.dev.bbq_watcher;
 
-import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
@@ -9,26 +8,31 @@ import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattDescriptor;
 import android.bluetooth.BluetoothGattService;
 import android.bluetooth.BluetoothManager;
-import android.bluetooth.BluetoothSocket;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.TextView;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Calendar;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Set;
+import java.util.Locale;
 import java.util.UUID;
 
 /*
@@ -56,14 +60,55 @@ import java.util.UUID;
 
 */
 
-public class MainActivity extends AppCompatActivity
+public class MainActivity extends AppCompatActivity implements RecognitionListener
 {
     private Button scanButton;
     private TextView temperText;
+    private EditText foodEditText;
+    private TextView peakText;
+    private TextView foodText;
+    private Button foodButton;
+    private Button foodVoiceButton;
+    private Button logButton;
 
     private BluetoothAdapter btAdapter;
     private BluetoothGatt btGatt;
     private BluetoothGattCharacteristic btCharacteristic;
+
+    //[Saved Preferences Variables]
+    private SharedPreferences savedData;
+    private SharedPreferences.Editor edit;
+    private int savedTaskCount;
+    private ArrayList<String> savedTaskName;
+    private ArrayList<String> savedTaskTimestamp;
+    private ArrayList<Double> savedTaskPeak;
+    //[/Saved Preferences Variables]
+
+    //reading from probe 1
+    private double latestPeak;
+    private int checksSinceLastIncrease;
+    private Calendar aCalendar;
+    private Date latestPeakTimestamp;
+    private SimpleDateFormat timestampFormat;
+
+    //[Text To Speech Variables]
+    private TextToSpeech toSpeech;
+    private String speechInText;
+    private HashMap<String, String> endOfSpeakIndentifier;
+
+    private final String textToSpeechID_Clarification = "Clarification";
+    //[/Text To Speech Variables]
+
+    private SpeechRecognizer recog;
+    private Intent recogIntent;
+    private int pingingRecogFor;
+    private int previousPingingRecogFor;
+    private final int pingingRecogFor_FoodName = 1;
+    private final int pingingRecogFor_Confirmation = 2;
+    private final int pingingRecogFor_Clarification = 3;
+    private final int pingingRecogFor_Nothing = -1;
+
+    private String[] currentPossiblePhrasesNeedingClarification;
 
 
     @Override
@@ -89,6 +134,9 @@ public class MainActivity extends AppCompatActivity
 
         //Setup the textView for later when we need to display the temperatures
         temperText = (TextView) findViewById(R.id.temperText);
+        foodText = (TextView) findViewById(R.id.foodTextView);
+        peakText = (TextView) findViewById(R.id.peakTextView);
+        foodEditText = (EditText) findViewById(R.id.foodEditText);
 
 
         //Setup the listener for when the scan button is clicked
@@ -103,7 +151,115 @@ public class MainActivity extends AppCompatActivity
             }
         });
 
+        foodButton = (Button) findViewById(R.id.foodButton);
+        foodButton.setOnClickListener(new View.OnClickListener()
+        {
+            @Override
+            public void onClick(View v)
+            {
+                foodText.setText("Current Food: " + foodEditText.getText().toString());
+                checksSinceLastIncrease = 0;
+                latestPeak = 0.00;
+            }
+        });
 
+        foodVoiceButton = (Button) findViewById(R.id.foodVoiceButton);
+        foodVoiceButton.setOnClickListener(new View.OnClickListener()
+        {
+            @Override
+            public void onClick(View v)
+            {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+                {
+                    toSpeech.speak("What is the name of the current task?", TextToSpeech.QUEUE_FLUSH, null, "StartReading");
+                }
+            }
+        });
+
+        logButton = (Button) findViewById(R.id.logButton);
+        logButton.setOnClickListener(new View.OnClickListener()
+        {
+            @Override
+            public void onClick(View v)
+            {
+                startActivity(new Intent(getApplicationContext(), LogActivity.class));
+            }
+        });
+
+
+        aCalendar = Calendar.getInstance();
+        latestPeak = 0.00;
+        latestPeakTimestamp = new Date();
+        timestampFormat = new SimpleDateFormat("hh:mm:ss dd-MM-yyyy");
+        checksSinceLastIncrease = 11;//11 is the number at which it stops checking for increases in temperature.
+        // (by initializing at 11, the app will not check for peak temperature on startup)
+
+        recog = SpeechRecognizer.createSpeechRecognizer(getApplicationContext());
+        recog.setRecognitionListener(this);
+        recogIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        recogIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE,"en");
+        recogIntent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getApplicationContext().getPackageName());
+        recogIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_WEB_SEARCH);
+        recogIntent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
+
+        currentPossiblePhrasesNeedingClarification = new String[]{};
+
+
+        //[SharedPreferences Setup]
+        savedData = getApplicationContext().getSharedPreferences("BBQWatchLogsSavedData", Context.MODE_PRIVATE);
+        savedTaskName = new ArrayList<String>();
+        savedTaskTimestamp = new ArrayList<String>();
+        savedTaskPeak = new ArrayList<Double>();
+        savedTaskCount = savedData.getInt("TaskCount", 0);
+
+        for(int i = 1; i <= savedTaskCount; i++)
+        {
+            savedTaskName.add(savedData.getString("TaskName" + i, "-TaskName" + i + " not found-"));
+            savedTaskTimestamp.add(savedData.getString("TaskTimestamp" + i, "-TaskTimestamp" + i + " not found-"));
+            savedTaskPeak.add((double) savedData.getFloat("TaskPeak" + i, 0));
+        }
+        //[/SharedPreferences Setup]
+
+
+
+        setupTextToSpeech();
+    }
+
+    @Override
+    protected void onResume()
+    {
+        super.onResume();
+        //[SharedPreferences Setup]
+        savedData = getApplicationContext().getSharedPreferences("BBQWatchLogsSavedData", Context.MODE_PRIVATE);
+        savedTaskName = new ArrayList<String>();
+        savedTaskTimestamp = new ArrayList<String>();
+        savedTaskPeak = new ArrayList<Double>();
+        savedTaskCount = savedData.getInt("TaskCount", 0);
+
+        for (int i = 1; i <= savedTaskCount; i++)
+        {
+            savedTaskName.add(savedData.getString("TaskName" + i, "-TaskName" + i + " not found-"));
+            savedTaskTimestamp.add(savedData.getString("TaskTimestamp" + i, "-TaskTimestamp" + i + " not found-"));
+            savedTaskPeak.add((double) savedData.getFloat("TaskPeak" + i, 0));
+        }
+        //[/SharedPreferences Setup]
+    }
+
+    @Override
+    protected void onPause()
+    {
+        super.onPause();
+        edit = savedData.edit();
+
+        for(int i = 1; i <= savedTaskCount; i++)
+        {
+            edit.putString("TaskName" + i, savedTaskName.get(i - 1));
+            edit.putString("TaskTimestamp" + i, savedTaskTimestamp.get(i - 1));
+            edit.putFloat("TaskPeak" + i, savedTaskPeak.get(i - 1).floatValue());
+        }
+
+        edit.putInt("TaskCount", savedTaskCount);
+        edit.commit();
     }
 
     @Override
@@ -130,7 +286,6 @@ public class MainActivity extends AppCompatActivity
             {
                 Log.i("BBQ bt", "onLeScan found device: " + device.getAddress());
                 btGatt = device.connectGatt(getApplicationContext(), false, btleGattCallback);
-                ;
             }
 
         }
@@ -187,6 +342,48 @@ public class MainActivity extends AppCompatActivity
                         }
                     }
                 });
+
+                if(checksSinceLastIncrease < 10)
+                {
+                    if(temp1 > latestPeak)
+                    {
+                        checksSinceLastIncrease = 0;
+
+                        latestPeak = temp1;
+                        aCalendar = Calendar.getInstance();
+                        latestPeakTimestamp = aCalendar.getTime();
+
+                        runOnUiThread(new Runnable()
+                        {
+                            @Override
+                            public void run()
+                            {
+                                peakText.setText("Peak Temperature: " + latestPeak + "^C" + "\nTimestamp: " + timestampFormat.format(latestPeakTimestamp));
+                                Log.i("BBQData", "Peak Temperature: " + latestPeak + "^C" + "\nTimestamp: " + timestampFormat.format(latestPeakTimestamp));
+                            }
+                        });
+
+
+                    }
+                    else
+                    {
+                        checksSinceLastIncrease++;
+                    }
+                }
+                else if(checksSinceLastIncrease == 10)
+                {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+                    {
+                        toSpeech.speak("Reading Complete for " + foodText.getText() + ". Peak Temperature was " + latestPeak + " degrees Celsius. ", TextToSpeech.QUEUE_FLUSH, null, "PeakPlayback");
+                    }
+                    Log.i("BBQData", "Reading Complete for " + foodText.getText().subSequence(18, foodText.length() - 1) + ". Peak Temperature was " + latestPeak + ".");
+                    savedTaskName.add(foodText.getText().toString());
+                    savedTaskTimestamp.add(timestampFormat.format(latestPeakTimestamp));
+                    savedTaskPeak.add(latestPeak);
+                    savedTaskCount++;
+
+                    checksSinceLastIncrease++;
+                }
             }
         }
 
@@ -265,6 +462,317 @@ public class MainActivity extends AppCompatActivity
         return 2222.22;
     }
 
+
+
+    //++++++++[Text To Speech Code]
+    private void setupTextToSpeech()
+    {
+        toSpeech = new TextToSpeech(getApplicationContext(), new TextToSpeech.OnInitListener() {
+            @Override
+            public void onInit(int status)
+            {
+                Log.i("Text To Speech Update", "onInit Complete");
+                toSpeech.setLanguage(Locale.ENGLISH);
+                endOfSpeakIndentifier = new HashMap();
+                endOfSpeakIndentifier.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "endOfSpeech");
+                toSpeech.setOnUtteranceProgressListener(new UtteranceProgressListener()
+                {
+                    @Override
+                    public void onStart(String utteranceId)
+                    {
+                        Log.i("Text To Speech Update", "onStart called");
+                    }
+
+                    @Override
+                    public void onDone(String utteranceId)
+                    {
+                        switch (utteranceId)
+                        {
+                            case "PeakPlayback": break;
+                            case "StartReading": pingingRecogFor = pingingRecogFor_FoodName;
+                                runOnUiThread(new Runnable()
+                                {
+                                    @Override
+                                    public void run()
+                                    {
+                                        recog.startListening(recogIntent);
+                                    }
+                                });
+                            break;
+                        }
+                        /*if(utteranceId.matches("QualityAsk") || utteranceId.matches("QuantityAsk"))
+                        {
+                            pingingRecogFor = pingingRecogFor_Quality
+                            recognizer.startListening(recogIntent);
+                        }
+                        else
+                        {
+                            recognizer.startListening(recogIntent);
+                        }*/
+                        //toSpeech.shutdown();
+                    }
+
+                    @Override
+                    public void onError(String utteranceId)
+                    {
+                        Log.i("Text To Speech Update", "ERROR DETECTED");
+                    }
+                });
+            }
+        });
+    }
+//++++++++[/Text To Speech Code]
+
+    //++++++++[Recognition Listener Code]
+    @Override
+    public void onReadyForSpeech(Bundle bundle)
+    {
+        Log.e("Recog", "ReadyForSpeech");
+    }
+
+    @Override
+    public void onBeginningOfSpeech()
+    {
+        Log.e("Recog", "BeginningOfSpeech");
+    }
+
+    @Override
+    public void onRmsChanged(float v)
+    {
+        Log.e("Recog", "onRmsChanged");
+    }
+
+    @Override
+    public void onBufferReceived(byte[] bytes)
+    {
+        Log.e("Recog", "onBufferReceived");
+    }
+
+    @Override
+    public void onEndOfSpeech()
+    {
+        Log.e("Recog", "End ofSpeech");
+        recog.stopListening();
+    }
+
+    @Override
+    public void onError(int i)
+    {
+        switch (i)
+        {
+            //case RecognizerIntent.RESULT_AUDIO_ERROR: Log.e("Recog", "RESULT AUDIO ERROR"); break;
+            //case RecognizerIntent.RESULT_CLIENT_ERROR: Log.e("Recog", "RESULT CLIENT ERROR"); break;
+            //case RecognizerIntent.RESULT_NETWORK_ERROR: Log.e("Recog", "RESULT NETWORK ERROR"); break;
+            //case RecognizerIntent.RESULT_SERVER_ERROR: Log.e("Recog", "RESULT SERVER ERROR"); break;
+            case SpeechRecognizer.ERROR_SPEECH_TIMEOUT: Log.e("Recog", "SPEECH TIMEOUT ERROR"); break;
+            case SpeechRecognizer.ERROR_SERVER: Log.e("Recog", "SERVER ERROR"); break;
+            case SpeechRecognizer.ERROR_RECOGNIZER_BUSY: Log.e("Recog", "BUSY ERROR"); break;
+            case SpeechRecognizer.ERROR_NO_MATCH: Log.e("Recog", "NO MATCH ERROR");
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+                {
+                    toSpeech.speak("No Response Detected, aborting.", TextToSpeech.QUEUE_FLUSH, null, null);
+                }
+                break;
+            case SpeechRecognizer.ERROR_NETWORK_TIMEOUT: Log.e("Recog", "NETWORK TIMEOUT ERROR"); break;
+            case SpeechRecognizer.ERROR_NETWORK: Log.e("Recog", "TIMEOUT ERROR"); break;
+            case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS: Log.e("Recog", "INSUFFICENT PERMISSIONS ERROR"); break;
+            case SpeechRecognizer.ERROR_CLIENT: Log.e("Recog", "CLIENT ERROR"); break;
+            case SpeechRecognizer.ERROR_AUDIO: Log.e("Recog", "AUDIO ERROR"); break;
+            default: Log.e("Recog", "UNKNOWN ERROR: " + i); break;
+        }
+    }
+
+
+
+    @Override
+    public void onResults(Bundle bundle)
+    {
+        ArrayList<String> matches = bundle.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+        recogResultLogic(matches);
+
+    }
+
+    @Override
+    public void onPartialResults(Bundle bundle)
+    {
+        Log.e("Recog", "Partial Result");
+    }
+
+    @Override
+    public void onEvent(int i, Bundle bundle)
+    {
+        Log.e("Recog", "onEvent");
+    }
+//++++++++[/Recognition Listener Code]
+
+    //++++++++[Recognition Other Code]
+    private String sortThroughRecognizerResults(ArrayList<String> results, String[] matchablePhrases)
+    {
+        for (String aResult: results)
+        {
+            Log.i("Recog", "Sorting results for result: " + aResult);
+            for (String aPhrase: matchablePhrases)
+            {
+                Log.i("Recog", "Sorting results for result: " + aResult.toLowerCase().replace("-", " ") + " and Phrase: " + aPhrase.toLowerCase());
+                if((aResult.toLowerCase().replace("-"," ")).contains(aPhrase.toLowerCase()))
+                {
+                    Log.i("Recog", "Match Found");
+                    return aPhrase;
+                }
+            }
+        }
+        Log.i("Recog", "No matches found, returning empty string \"\" .");
+        return "";
+    }
+
+
+
+    private void sortThroughRecognizerResultsForAllPossiblities(ArrayList<String> results, String[] matchablePhrases)
+    {
+        ArrayList<String> possibleResults = new ArrayList<String>();
+        for (String aResult: results)
+        {
+            Log.i("Recog", "All Possiblities, Sorting results for result: " + aResult);
+            for (String aPhrase: matchablePhrases)
+            {
+                Boolean isDuplicate = false;
+                Log.i("Recog", "All Possiblities, Sorting results for result: " + aResult.toLowerCase().replace("-", " ") + " and Phrase: " + aPhrase.toLowerCase());
+                for (String b: possibleResults)
+                {
+                    if(b.matches(aPhrase)){isDuplicate = true; break;}
+                }
+
+                if((aResult.toLowerCase().replace("-"," ")).contains(aPhrase.toLowerCase()) && !isDuplicate)
+                {
+                    Log.i("Recog", "All Possiblities, Match Found");
+                    possibleResults.add(aPhrase);
+                }
+            }
+        }
+
+        currentPossiblePhrasesNeedingClarification = possibleResults.toArray(new String[possibleResults.size()]);
+        //if there is more than 1 keyword in the passed phrase, the method will list those keywords back to the user and ask them to repeat  the correct 1.
+        //This in turn will call recogResult from the utterance listener and trigger the pinging for Clarification case where the repeated word will then be used
+        //to resolve the logic of the previous call to recogResult.
+        if(possibleResults.size() > 1)
+        {
+            String clarificationString = "I'm sorry but did you mean.";
+
+            for (String a: possibleResults)
+            {
+                clarificationString += (". " + a);
+                if(!possibleResults.get(possibleResults.size() - 1).matches(a))
+                {
+                    clarificationString += ". or";
+                }
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+            {
+                pingingRecogFor = pingingRecogFor_Clarification;
+                toSpeech.speak(clarificationString, TextToSpeech.QUEUE_FLUSH, null, textToSpeechID_Clarification);
+            }
+        }
+        //if there is only 1 keyword in the passed phrase, the method skips speech confirmation and immediately calls it's own listener in recogResults,
+        // which(given that there is only 1 possible match, will skip to resolving the previous call to recogResult's logic)
+        else if (possibleResults.size() == 1)
+        {
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+            {
+                pingingRecogFor = pingingRecogFor_Clarification;
+                recogResultLogic(possibleResults);
+                //toSpeech.speak("h", TextToSpeech.QUEUE_FLUSH, null, textToSpeechID_Clarification);
+            }
+        }
+        else
+        {
+            Log.i("Recog", "No matches found, Requesting Repetition .");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+            {
+                toSpeech.speak("Can you please repeat that?", TextToSpeech.QUEUE_FLUSH, null, textToSpeechID_Clarification);
+            }
+        }
+    }
+
+    private String sortThroughRecognizerResults(ArrayList<String> results, String matchablePhrase)
+    {
+        for (String aResult: results)
+        {
+            Log.i("Recog", "Sorting results for result: " + aResult.replace("-", " ") + " and Phrase: " + matchablePhrase.toLowerCase());
+            if((aResult.replace("-", " ")).contains(matchablePhrase.toLowerCase()))
+            {
+                Log.i("Recog", "Match Found");
+                return matchablePhrase;
+            }
+        }
+        Log.i("Recog", "No matches found, returning empty string \"\" .");
+        return "";
+    }
+
+
+    //CALLED FROM: RecogListener onResults()
+    private void recogResultLogic(ArrayList<String> matches)
+    {
+        String[] phrases;
+        Log.i("Recog", "Results recieved: " + matches);
+        String response = "-Null-";
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+        {
+            Log.i("Recog", "Pinging For: " + pingingRecogFor);
+            switch (pingingRecogFor)
+            {
+                case pingingRecogFor_Clarification:
+
+                    Log.i("Recog", "onResult for Clarification");
+                    phrases = currentPossiblePhrasesNeedingClarification;
+                    response = sortThroughRecognizerResults(matches, phrases);
+                    Log.i("Recog", "onClarification: Response= " + response);
+                    if(response.matches(""))
+                    {
+                        Log.i("Recog", "Unrecongised response: " + response);
+                        pingingRecogFor = pingingRecogFor_Clarification;
+                        ArrayList<String> copyOfCurrentPossiblePhrases = new ArrayList<String>(Arrays.asList(currentPossiblePhrasesNeedingClarification));
+                        sortThroughRecognizerResultsForAllPossiblities(copyOfCurrentPossiblePhrases, phrases);
+                    }
+                    else
+                    {
+                        Log.i("Recog", "Clarification Returned: " + response);
+                    }
+                break;
+
+                case pingingRecogFor_FoodName:
+
+                    if(sortThroughRecognizerResults(matches, "next").matches("next"))
+                    {
+                        String text = foodText.getText().toString();
+                        int lastNum = 1;
+                        try
+                        {
+                            lastNum = Integer.parseInt(text.substring(text.length() - 1, text.length() - 1));
+                        }
+                        catch (NumberFormatException e)
+                        {
+                            Log.e("BBQData", "NumberFormatException in pingRecogFor_FoodName: " + e.toString());
+                            lastNum = 1;
+                        }
+                        lastNum++;
+                        foodText.setText(text.substring(0, text.length() - 1) + lastNum);
+                        toSpeech.speak("starting next scan", TextToSpeech.QUEUE_FLUSH, null, null);
+                    }
+                    else
+                    {
+                        foodText.setText("Current Food: " + matches.get(0) + " 1");
+                    }
+
+                    checksSinceLastIncrease = 0;
+                    latestPeak = 0.00;
+                break;
+            }
+        }
+    }
+//++++++++[/Recognition Other Code]
 }
 
 
