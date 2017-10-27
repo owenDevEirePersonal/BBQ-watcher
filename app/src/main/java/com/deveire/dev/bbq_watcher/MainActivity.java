@@ -64,16 +64,17 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
 {
     private Button scanButton;
     private TextView temperText;
-    private EditText foodEditText;
+    //private EditText foodEditText;
     private TextView peakText;
     private TextView foodText;
-    private Button foodButton;
+    //private Button foodButton;
     private Button foodVoiceButton;
     private Button logButton;
 
     private BluetoothAdapter btAdapter;
     private BluetoothGatt btGatt;
     private BluetoothGattCharacteristic btCharacteristic;
+    private boolean rangeDialIsConnected;
 
     //[Saved Preferences Variables]
     private SharedPreferences savedData;
@@ -122,6 +123,7 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
         BluetoothManager btManager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
 
         btAdapter = btManager.getAdapter();
+        rangeDialIsConnected = false;
 
         //if bluetooth is not enabled, open dialog asking the user to enable it
         final int REQUEST_ENABLE_BT = 99;
@@ -136,7 +138,7 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
         temperText = (TextView) findViewById(R.id.temperText);
         foodText = (TextView) findViewById(R.id.foodTextView);
         peakText = (TextView) findViewById(R.id.peakTextView);
-        foodEditText = (EditText) findViewById(R.id.foodEditText);
+        //foodEditText = (EditText) findViewById(R.id.foodEditText);
 
 
         //Setup the listener for when the scan button is clicked
@@ -146,12 +148,15 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
             @Override
             public void onClick(View view)
             {
-                Log.i("BBQ_bt", "Button Clicked");
-                btAdapter.startLeScan(leScanCallback);
+                    Log.i("BBQ_bt", "Button Clicked");
+                if(!rangeDialIsConnected)
+                {
+                    btAdapter.startLeScan(leScanCallback);
+                }
             }
         });
 
-        foodButton = (Button) findViewById(R.id.foodButton);
+        /*foodButton = (Button) findViewById(R.id.foodButton);
         foodButton.setOnClickListener(new View.OnClickListener()
         {
             @Override
@@ -161,7 +166,7 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
                 checksSinceLastIncrease = 0;
                 latestPeak = 0.00;
             }
-        });
+        });*/
 
         foodVoiceButton = (Button) findViewById(R.id.foodVoiceButton);
         foodVoiceButton.setOnClickListener(new View.OnClickListener()
@@ -266,8 +271,12 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
     protected void onDestroy()
     {
         //When the app is shutdown by the android OS, stop any ongoing scans and close any open Gatt connections.
+
         btAdapter.stopLeScan(leScanCallback);
-        btGatt.close();
+        if(btGatt != null)
+        {
+            btGatt.close();
+        }
         super.onDestroy();
     }
 
@@ -374,7 +383,7 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
                 {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
                     {
-                        toSpeech.speak("Reading Complete for " + foodText.getText() + ". Peak Temperature was " + latestPeak + " degrees Celsius. ", TextToSpeech.QUEUE_FLUSH, null, "PeakPlayback");
+                        toSpeech.speak("Reading Complete for " + foodText.getText() + ". . Peak Temperature was " + latestPeak + " degrees Celsius. ", TextToSpeech.QUEUE_FLUSH, null, "PeakPlayback");
                     }
                     Log.i("BBQData", "Reading Complete for " + foodText.getText().subSequence(18, foodText.length() - 1) + ". Peak Temperature was " + latestPeak + ".");
                     savedTaskName.add(foodText.getText().toString());
@@ -396,6 +405,7 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
             {
                 Log.i("BBQ bt", "onConnectionStateChanged: connected, stopping scan.");
                 btAdapter.stopLeScan(leScanCallback);
+                rangeDialIsConnected = true;
                 Log.i("BBQ bt", "Attempting to start service discovery:");
                 btGatt.discoverServices();
             }
