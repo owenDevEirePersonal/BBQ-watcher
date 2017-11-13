@@ -25,6 +25,9 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -34,6 +37,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.WebSocket;
+import okhttp3.WebSocketListener;
+import okio.ByteString;
 
 /*
     ++++++++General Explanation of the code++++++++
@@ -70,11 +80,14 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
     //private Button foodButton;
     private Button foodVoiceButton;
     private Button logButton;
+    private Button scriptedButton;
 
     private BluetoothAdapter btAdapter;
     private BluetoothGatt btGatt;
     private BluetoothGattCharacteristic btCharacteristic;
     private boolean rangeDialIsConnected;
+
+    private int scriptLine;
 
     //[Saved Preferences Variables]
     private SharedPreferences savedData;
@@ -107,9 +120,18 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
     private final int pingingRecogFor_FoodName = 1;
     private final int pingingRecogFor_Confirmation = 2;
     private final int pingingRecogFor_Clarification = 3;
+    private final int pingingRecogFor_ScriptedExchange = 4;
     private final int pingingRecogFor_Nothing = -1;
 
     private String[] currentPossiblePhrasesNeedingClarification;
+
+    //[Brightspot Network Variables]
+    private OkHttpClient networkClient;
+    private final String serverURL = "www.deveire.com/food-safety-server";
+    private WebSocket wsSocket;
+
+    private JSONObject jsonToPass;
+    //[/Brightspot Network Variables]
 
 
     @Override
@@ -191,6 +213,18 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
             }
         });
 
+        scriptedButton = (Button) findViewById(R.id.scriptedButton);
+        scriptedButton.setOnClickListener(new View.OnClickListener()
+        {
+            @Override
+            public void onClick(View v)
+            {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+                {
+                    toSpeech.speak("Rashers 30 degrees celsius at 30 minutes.", TextToSpeech.QUEUE_FLUSH, null, "Scripted");
+                }
+            }
+        });
 
         aCalendar = Calendar.getInstance();
         latestPeak = 0.00;
@@ -226,8 +260,11 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
         //[/SharedPreferences Setup]
 
 
-
         setupTextToSpeech();
+
+        setupSocket();
+
+        scriptLine = 0;
     }
 
     @Override
@@ -384,14 +421,19 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
                     {
                         toSpeech.speak("Reading Complete for " + foodText.getText() + ". . Peak Temperature was " + latestPeak + " degrees Celsius. ", TextToSpeech.QUEUE_FLUSH, null, "PeakPlayback");
+                        Log.e("Mock Output", "{command:store, data:{foodtext: " + foodText.getText() + ", peak: " + latestPeak + ", time: " + timestampFormat.format(latestPeakTimestamp) + " }}");
+
                     }
                     Log.i("BBQData", "Reading Complete for " + foodText.getText().subSequence(18, foodText.length() - 1) + ". Peak Temperature was " + latestPeak + ".");
+                    createJson(latestPeakTimestamp, foodText.getText().toString(), latestPeak);
+                    startSocketConnection();
+
                     savedTaskName.add(foodText.getText().toString());
                     savedTaskTimestamp.add(timestampFormat.format(latestPeakTimestamp));
                     savedTaskPeak.add(latestPeak);
                     savedTaskCount++;
 
-                    checksSinceLastIncrease++;
+                    checksSinceLastIncrease++; //advances checksSinceLastIncrease to 11, so the result outputting code here doesn't run a second time.
                 }
             }
         }
@@ -474,7 +516,7 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
 
 
 
-    //++++++++[Text To Speech Code]
+//++++++++[Text To Speech Code]
     private void setupTextToSpeech()
     {
         toSpeech = new TextToSpeech(getApplicationContext(), new TextToSpeech.OnInitListener() {
@@ -499,7 +541,19 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
                         switch (utteranceId)
                         {
                             case "PeakPlayback": break;
-                            case "StartReading": pingingRecogFor = pingingRecogFor_FoodName;
+                            case "StartReading":
+                                pingingRecogFor = pingingRecogFor_FoodName;
+                                runOnUiThread(new Runnable()
+                                {
+                                    @Override
+                                    public void run()
+                                    {
+                                        recog.startListening(recogIntent);
+                                    }
+                                });
+                                break;
+                            case "Scripted":
+                                pingingRecogFor = pingingRecogFor_ScriptedExchange;
                                 runOnUiThread(new Runnable()
                                 {
                                     @Override
@@ -770,6 +824,19 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
                         lastNum++;
                         foodText.setText(text.substring(0, text.length() - 1) + lastNum);
                         toSpeech.speak("starting next scan", TextToSpeech.QUEUE_FLUSH, null, null);
+                        Log.e("Mock Output", "next");
+                    }
+                    else if (sortThroughRecognizerResults(matches, "dump").matches("dump"))
+                    {
+                        Log.e("Mock Output", "dump");
+                    }
+                    else if (sortThroughRecognizerResults(matches, "ok").matches("ok"))
+                    {
+                        Log.e("Mock Output", "ok");
+                    }
+                    else if (sortThroughRecognizerResults(matches, "raise trouble ticket").matches("raise trouble ticket"))
+                    {
+                        Log.e("Mock Output", "raise trouble ticket");
                     }
                     else
                     {
@@ -779,10 +846,122 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
                     checksSinceLastIncrease = 0;
                     latestPeak = 0.00;
                 break;
+
+                case pingingRecogFor_ScriptedExchange:
+
+                    scriptLine++;
+
+                    switch (scriptLine)
+                    {
+                        case 1: toSpeech.speak("Dan. What is the issue?", TextToSpeech.QUEUE_FLUSH, null, "Scripted"); break;
+                        case 2: toSpeech.speak("Do you mean that the heating element in the cooker is not working?", TextToSpeech.QUEUE_FLUSH, null, "Scripted"); break;
+                        case 3: toSpeech.speak("OK Trouble Ticket S U 16 24 has been raised for Asset number A 13 45 as a Priority 2 Ticket. . This Job has been allocated to Sean at . 087 28 41 23. . , . , You will receive a text message with an expected resolution day and time. . Please say okay or Not okay after the Tone.", TextToSpeech.QUEUE_FLUSH, null, "Scripted"); break;
+                        case 4: toSpeech.speak("Please advise, why is it not okay?", TextToSpeech.QUEUE_FLUSH, null, "Scripted"); break;
+                        case 5: toSpeech.speak("Trouble Ticket S U 16 24 has been changed to priority 1, Please say okay or not okay after the tone.", TextToSpeech.QUEUE_FLUSH, null, "Scripted"); break;
+                        case 6:
+                            toSpeech.speak("Thank you for using this service and on behalf of the SUDEXO hard services department, we apologise for the inconvenience caused as we rush to fix this issue ASAP", TextToSpeech.QUEUE_FLUSH, null, "");
+                            scriptLine = 0;
+                        break;
+                    }
+
+
+                    break;
             }
         }
     }
 //++++++++[/Recognition Other Code]
+
+//++++++++++[Brightspot Server Code]
+    private void setupSocket()
+    {
+        networkClient = new OkHttpClient();
+    }
+
+    private void startSocketConnection() {
+        Request request = new Request.Builder().url(serverURL).build();
+        BBQWebSocketListener listener = new BBQWebSocketListener();
+        wsSocket = networkClient.newWebSocket(request, listener);
+        wsSocket.send(jsonToPass.toString());
+        networkClient.dispatcher().executorService().shutdown();
+    }
+
+    private class BBQWebSocketListener extends WebSocketListener
+    {
+        private static final int NORMAL_CLOSURE_STATUS = 1000;
+
+        @Override
+        public void onOpen(WebSocket webSocket, Response response)
+        {
+            Log.i("WebSocket", " Socket onOpen. Response: " + response.toString());
+            webSocket.close(NORMAL_CLOSURE_STATUS, "Goodbye !");
+        }
+
+        @Override
+        public void onMessage(WebSocket webSocket, String text)
+        {
+            Log.i("WebSocket", "Socket onMessage. Receiving : " + text);
+        }
+
+        @Override
+        public void onMessage(WebSocket webSocket, ByteString bytes)
+        {
+            Log.i("WebSocket", "Socket onMessage. Receiving bytes : " + bytes.hex());
+        }
+
+        @Override
+        public void onClosing(WebSocket webSocket, int code, String reason)
+        {
+            webSocket.close(NORMAL_CLOSURE_STATUS, null);
+            Log.i("WebSocket", "Socket onMessage. Closing : " + code + " / " + reason);
+        }
+
+        @Override
+        public void onFailure(WebSocket webSocket, Throwable t, Response response)
+        {
+            Log.i("WebSocket", "Socket onFailure. Error : " + t.getMessage());
+        }
+    }
+
+    private void createJson(Date inDate, String inNameOfFood, double inTemperature)
+    {
+        JSONObject temper = new JSONObject();
+        try
+        {
+            temper.put("value", inTemperature);
+            temper.put("unit", "C");
+        }
+        catch (JSONException e)
+        {
+            Log.e("WebSocket", "Json Error while creating temper Json: " + e.toString());
+        }
+
+        JSONObject paras = new JSONObject();
+        try
+        {
+            paras.put("date_milliseconds", inDate.getTime());
+            paras.put("name", inNameOfFood);
+            paras.put("temperature", temper);
+        }
+        catch (JSONException e)
+        {
+            Log.e("WebSocket", "Json Error while creating paras Json: " + e.toString());
+        }
+
+        jsonToPass = new JSONObject();
+        try
+        {
+            jsonToPass.put("sender", "android_client");
+            jsonToPass.put("method_name", "add_measurement");
+            jsonToPass.put("params", paras);
+        }
+        catch (JSONException e)
+        {
+            Log.e("WebSocket", "Json Error while creating jsonToPass Json: " + e.toString());
+        }
+
+        Log.i("WebSocket", "Json Creation Complete: " + jsonToPass.toString());
+    }
+//++++++++++[/Brightspot Server Code]
 }
 
 
