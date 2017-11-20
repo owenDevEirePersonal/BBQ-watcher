@@ -11,24 +11,51 @@ import android.bluetooth.BluetoothManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.location.Geocoder;
+import android.location.Location;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.os.Build;
+import android.os.Handler;
+import android.os.ResultReceiver;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
+import android.support.annotation.Nullable;
+import android.support.v4.content.ContextCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.TextView;
 
+
+import com.android.volley.AuthFailureError;
+import com.android.volley.RequestQueue;
+import com.android.volley.Response;
+import com.android.volley.VolleyError;
+import com.android.volley.Request;
+import com.android.volley.toolbox.JsonObjectRequest;
+import com.android.volley.toolbox.Volley;
+
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.net.URLEncoder;
 import java.text.SimpleDateFormat;
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
@@ -36,14 +63,17 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
-import okhttp3.OkHttpClient;
+import javax.net.ssl.HttpsURLConnection;
+
+/*import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
-import okio.ByteString;
+import okio.ByteString;*/
 
 /*
     ++++++++General Explanation of the code++++++++
@@ -70,7 +100,7 @@ import okio.ByteString;
 
 */
 
-public class MainActivity extends AppCompatActivity implements RecognitionListener
+public class MainActivity extends AppCompatActivity implements RecognitionListener, DownloadCallback<String>
 {
     private Button scanButton;
     private TextView temperText;
@@ -126,12 +156,24 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
     private String[] currentPossiblePhrasesNeedingClarification;
 
     //[Brightspot Network Variables]
-    private OkHttpClient networkClient;
-    private final String serverURL = "www.deveire.com/food-safety-server";
-    private WebSocket wsSocket;
+    //private OkHttpClient networkClient;
+    private final String serverIP = "http://34.251.66.61:9080/food_safety_server";
+    //private WebSocket wsSocket;
 
     private JSONObject jsonToPass;
     //[/Brightspot Network Variables]
+
+    //[Network and periodic location update, Variables]
+
+
+    private boolean pingingServer;
+    //private final String serverIPAddress = "http://192.168.1.188:8080/TruckyTrackServlet/TTServlet";
+    //private final String serverIPAddress = "http://api.eirpin.com/api/TTServlet";
+    //private final String serverIPAddress = "http://eirpin.com/kegbots360/TTServlet";
+    //private String serverIPAddress;
+    private String serverURL;
+    private NetworkFragment aNetworkFragment;
+    //[/Network and periodic location update, Variables]
 
 
     @Override
@@ -221,7 +263,7 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
             {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
                 {
-                    toSpeech.speak("Rashers 30 degrees celsius at 30 minutes.", TextToSpeech.QUEUE_FLUSH, null, "Scripted");
+                    toSpeech.speak("Sausage Rolls 30 degrees celsius at 30 minutes.", TextToSpeech.QUEUE_FLUSH, null, "Scripted");
                 }
             }
         });
@@ -262,7 +304,7 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
 
         setupTextToSpeech();
 
-        setupSocket();
+        //setupSocket();
 
         scriptLine = 0;
     }
@@ -426,7 +468,8 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
                     }
                     Log.i("BBQData", "Reading Complete for " + foodText.getText().subSequence(18, foodText.length() - 1) + ". Peak Temperature was " + latestPeak + ".");
                     createJson(latestPeakTimestamp, foodText.getText().toString(), latestPeak);
-                    startSocketConnection();
+                    //startSocketConnection();
+                    postDataToBrightspot();
 
                     savedTaskName.add(foodText.getText().toString());
                     savedTaskTimestamp.add(timestampFormat.format(latestPeakTimestamp));
@@ -824,6 +867,8 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
                         lastNum++;
                         foodText.setText(text.substring(0, text.length() - 1) + lastNum);
                         toSpeech.speak("starting next scan", TextToSpeech.QUEUE_FLUSH, null, null);
+                        checksSinceLastIncrease = 0;
+                        latestPeak = 0.00;
                         Log.e("Mock Output", "next");
                     }
                     else if (sortThroughRecognizerResults(matches, "dump").matches("dump"))
@@ -840,11 +885,15 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
                     }
                     else
                     {
-                        foodText.setText("Current Food: " + matches.get(0) + " 1");
+                        if(!sortThroughRecognizerResults(matches, new String[]{"sausage rolls", "rashers", "pudding", "puddings", "fried eggs", "scrambled", "scrambled eggs", "beans"}).matches(""))
+                        {
+                            foodText.setText("Current Food: " + matches.get(0));
+                            checksSinceLastIncrease = 0;
+                            latestPeak = 0.00;
+                        }
                     }
 
-                    checksSinceLastIncrease = 0;
-                    latestPeak = 0.00;
+
                 break;
 
                 case pingingRecogFor_ScriptedExchange:
@@ -853,15 +902,82 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
 
                     switch (scriptLine)
                     {
-                        case 1: toSpeech.speak("Dan. What is the issue?", TextToSpeech.QUEUE_FLUSH, null, "Scripted"); break;
-                        case 2: toSpeech.speak("Do you mean that the heating element in the cooker is not working?", TextToSpeech.QUEUE_FLUSH, null, "Scripted"); break;
-                        case 3: toSpeech.speak("OK Trouble Ticket S U 16 24 has been raised for Asset number A 13 45 as a Priority 2 Ticket. . This Job has been allocated to Sean at . 087 28 41 23. . , . , You will receive a text message with an expected resolution day and time. . Please say okay or Not okay after the Tone.", TextToSpeech.QUEUE_FLUSH, null, "Scripted"); break;
-                        case 4: toSpeech.speak("Please advise, why is it not okay?", TextToSpeech.QUEUE_FLUSH, null, "Scripted"); break;
-                        case 5: toSpeech.speak("Trouble Ticket S U 16 24 has been changed to priority 1, Please say okay or not okay after the tone.", TextToSpeech.QUEUE_FLUSH, null, "Scripted"); break;
+                        case 1:
+                            if(!sortThroughRecognizerResults(matches, "ticket").matches(""))
+                            {
+                                toSpeech.speak("Dan. What is the issue?", TextToSpeech.QUEUE_FLUSH, null, "Scripted");
+                            }
+                            else
+                            {
+                                toSpeech.speak("Unacceptable Response: Aborting Dialog", TextToSpeech.QUEUE_FLUSH, null, "");
+                                scriptLine = 0;
+                            }
+                            break;
+
+                        case 2:
+                            if(!sortThroughRecognizerResults(matches, "element").matches(""))
+                            {
+                                toSpeech.speak("Do you mean that the heating element in the cooker is not working?", TextToSpeech.QUEUE_FLUSH, null, "Scripted");
+                            }
+                            else
+                            {
+                                toSpeech.speak("Unacceptable Response: Aborting Dialog", TextToSpeech.QUEUE_FLUSH, null, "");
+                                scriptLine = 0;
+                            }
+                            break;
+
+                        case 3:
+                            if(!sortThroughRecognizerResults(matches, "element").matches(""))
+                            {
+                                toSpeech.speak("OK Trouble Ticket S U 16 24 has been raised for Asset number A 13 45 as a Priority 2 Ticket. . This Job has been allocated to Sean at . 087 28 41 23. . , . , You will receive a text message with an expected resolution day and time. . Please say okay or Not okay after the Tone.", TextToSpeech.QUEUE_FLUSH, null, "Scripted");
+                            }
+                            else
+                            {
+                                toSpeech.speak("Unacceptable Response: Aborting Dialog", TextToSpeech.QUEUE_FLUSH, null, "");
+                                scriptLine = 0;
+                            }
+                            break;
+
+                        case 4:
+                            if(!sortThroughRecognizerResults(matches, "not").matches(""))
+                            {
+                                toSpeech.speak("Please advise, why is it not okay?", TextToSpeech.QUEUE_FLUSH, null, "Scripted");
+                            }
+                            else
+                            {
+                                toSpeech.speak("Unacceptable Response: Aborting Dialog", TextToSpeech.QUEUE_FLUSH, null, "");
+                                scriptLine = 0;
+                            }
+                            break;
+
+                        case 5:
+                            if(!sortThroughRecognizerResults(matches, "priority 1").matches(""))
+                            {
+                                toSpeech.speak("Trouble Ticket S U 16 24 has been changed to priority 3, Please say okay or not okay after the tone.", TextToSpeech.QUEUE_FLUSH, null, "Scripted");
+                            }
+                            else
+                            {
+                                toSpeech.speak("Unacceptable Response: Aborting Dialog", TextToSpeech.QUEUE_FLUSH, null, "");
+                                scriptLine = 0;
+                            }
+                            break;
+
                         case 6:
-                            toSpeech.speak("Thank you for using this service and on behalf of the SUDEXO hard services department, we apologise for the inconvenience caused as we rush to fix this issue ASAP", TextToSpeech.QUEUE_FLUSH, null, "");
-                            scriptLine = 0;
-                        break;
+                            if(!sortThroughRecognizerResults(matches, "ok").matches(""))
+                            {
+                                toSpeech.speak("Thank you for using this service and on behalf of the SUDEXO hard services department, we apologise for the inconvenience caused as we rush to fix this issue ASAP", TextToSpeech.QUEUE_FLUSH, null, "");
+                                scriptLine = 0;
+                                createTroubleJson();
+                                postDataToBrightspot();
+                            }
+                            else
+                            {
+                                toSpeech.speak("Unacceptable Response: Aborting Dialog", TextToSpeech.QUEUE_FLUSH, null, "");
+                                scriptLine = 0;
+                            }
+
+                            //startSocketConnection();
+                            break;
                     }
 
 
@@ -872,7 +988,7 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
 //++++++++[/Recognition Other Code]
 
 //++++++++++[Brightspot Server Code]
-    private void setupSocket()
+    /*private void setupSocket()
     {
         networkClient = new OkHttpClient();
     }
@@ -920,7 +1036,7 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
         {
             Log.i("WebSocket", "Socket onFailure. Error : " + t.getMessage());
         }
-    }
+    }*/
 
     private void createJson(Date inDate, String inNameOfFood, double inTemperature)
     {
@@ -961,8 +1077,200 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
 
         Log.i("WebSocket", "Json Creation Complete: " + jsonToPass.toString());
     }
+
+    private void createTroubleJson()
+    {
+        JSONObject paras = new JSONObject();
+
+        jsonToPass = new JSONObject();
+        try
+        {
+            jsonToPass.put("sender", "android_client");
+            jsonToPass.put("method_name", "probe_trouble_ticket");
+            jsonToPass.put("params", paras);
+        }
+        catch (JSONException e)
+        {
+            Log.e("WebSocket", "Json Error while creating jsonToPass Json: " + e.toString());
+        }
+
+        Log.i("WebSocket", "Json Creation Complete: " + jsonToPass.toString());
+    }
+
+
+    //**********[Location Update and server pinging Code]
+    private void postDataToBrightspot()
+    {
+        try
+        {
+
+            serverURL = serverIP + "?data=" + URLEncoder.encode(jsonToPass.toString(), "UTF-8");
+            //lat and long are doubles, will cause issue? nope
+            Log.i("Network Update", "Attempting to start download from scanKeg. " + serverURL);
+            aNetworkFragment = NetworkFragment.getInstance(getSupportFragmentManager(), serverURL);
+        }
+        catch (Exception e)
+        {
+            Log.e("Network Update", "Error: " + e.toString());
+        }
+
+    }
+
+
+    //Update activity based on the results sent back by the servlet.
+    @Override
+    public void updateFromDownload(String result) {
+        //intervalTextView.setText("Interval: " + result);
+
+        if(result != null)
+        {
+
+        }
+        else
+        {
+            Log.e("Network UPDATE", "Error: network unavaiable");
+        }
+
+        Log.e("Download Output", "" + result);
+    }
+
+    @Override
+    public NetworkInfo getActiveNetworkInfo() {
+        ConnectivityManager connectivityManager =
+                (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        NetworkInfo networkInfo = connectivityManager.getActiveNetworkInfo();
+        return networkInfo;
+    }
+
+    @Override
+    public void onProgressUpdate(int progressCode, int percentComplete) {
+        switch(progressCode) {
+            // You can add UI behavior for progress updates here.
+            case Progress.ERROR:
+                Log.e("Network Update", "Progress Error: there was an error during a progress report at: " + percentComplete + "%");
+                break;
+            case Progress.CONNECT_SUCCESS:
+                Log.i("Network Update ", "connection successful during a progress report at: " + percentComplete + "%");
+                break;
+            case Progress.GET_INPUT_STREAM_SUCCESS:
+                Log.i("Network Update ", "input stream acquired during a progress report at: " + percentComplete + "%");
+                break;
+            case Progress.PROCESS_INPUT_STREAM_IN_PROGRESS:
+                Log.i("Network Update ", "input stream in progress during a progress report at: " + percentComplete + "%");
+                break;
+            case Progress.PROCESS_INPUT_STREAM_SUCCESS:
+                Log.i("Network Update ", "input stream processing successful during a progress report at: " + percentComplete + "%");
+                break;
+        }
+    }
+
+    @Override
+    public void finishDownloading() {
+        pingingServer = false;
+        Log.i("Network Update", "finished Downloading");
+        if (aNetworkFragment != null) {
+            Log.e("Network Update", "network fragment found, canceling download");
+            aNetworkFragment.cancelDownload();
+        }
+    }
+
+    class AddressResultReceiver extends ResultReceiver
+    {
+        public AddressResultReceiver(Handler handler) {
+            super(handler);
+        }
+
+        @Override
+        protected void onReceiveResult(int resultCode, Bundle resultData) {
+
+            // Display the address string
+            // or an error message sent from the intent service.
+            resultData.getString(Constants.RESULT_DATA_KEY);
+
+
+            // Show a toast message if an address was found.
+            if (resultCode == Constants.SUCCESS_RESULT)
+            {
+                Log.i("Success", "Address found");
+            }
+            else
+            {
+                Log.e("Network Error:", "in OnReceiveResult in AddressResultReceiver: " +  resultData.getString(Constants.RESULT_DATA_KEY));
+            }
+
+        }
+    }
+//**********[/Location Update and server pinging Code]
+
 //++++++++++[/Brightspot Server Code]
 }
+
+
+
+
+/*
+
+private void postDataToBrightspot() throws IOException
+    {
+        serverURL = serverIP + "?data=" + jsonToPass.toString();
+
+        /*URL url = new URL(serverURL);
+        HttpURLConnection urlConnection = (HttpURLConnection) url.openConnection();
+        int response = urlConnection.getResponseCode();
+
+        Log.i("Network Update", "Attempting to start download from postDataToBrightSpot: " + serverURL);
+        aNetworkFragment = NetworkFragment.getInstance(getSupportFragmentManager(), serverURL);*
+
+    URL url = new URL(serverIP);
+    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setReadTimeout(10000);
+                conn.setConnectTimeout(15000);
+                conn.setRequestMethod("POST");
+                conn.setDoInput(true);
+                conn.setDoOutput(true);
+
+                List<AbstractMap.SimpleEntry<String, String>> params = new ArrayList<AbstractMap.SimpleEntry<String, String>>();
+        params.add(new AbstractMap.SimpleEntry<String, String>("data", jsonToPass.toString()));
+
+
+        OutputStream os = conn.getOutputStream();
+        BufferedWriter writer = new BufferedWriter(
+        new OutputStreamWriter(os, "UTF-8"));
+        writer.write(getQuery(params));
+        writer.flush();
+        writer.close();
+        os.close();
+
+        conn.connect();
+        Log.e("Network", "Response: " + conn.getResponseMessage());
+        }
+
+private String getQuery(List<AbstractMap.SimpleEntry<String, String>> params) throws UnsupportedEncodingException
+        {
+        StringBuilder result = new StringBuilder();
+        boolean first = true;
+
+        for (AbstractMap.SimpleEntry<String, String> pair : params)
+        {
+        if (first)
+        first = false;
+        else
+        result.append("&");
+
+        result.append(URLEncoder.encode(pair.getKey(), "UTF-8"));
+        result.append("=");
+        result.append(URLEncoder.encode(pair.getValue(), "UTF-8"));
+        }
+
+        return result.toString();
+        }
+ */
+
+
+
+
+
+
 
 
 
@@ -980,7 +1288,4 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
 /*
 
 
-
-
-
- */
+*/
